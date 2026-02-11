@@ -11,7 +11,6 @@ from supabase import create_client, Client
 
 # ---------------- Config ----------------
 st.set_page_config(page_title="Customer Order Portal", layout="wide")
-st.session_state["portal_mode"] = "customer"
 
 REQUIRED_COLS = [
     "WO", "Quote", "PO Number", "Status",
