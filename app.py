@@ -13,6 +13,7 @@ from supabase import create_client, Client
 
 # ---------------- Config ----------------
 st.set_page_config(page_title="Order Book Calendar", layout="wide")
+st.session_state["portal_mode"] = "admin"
 
 REQUIRED_COLS = [
     "WO",
