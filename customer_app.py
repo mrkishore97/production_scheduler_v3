@@ -1,6 +1,5 @@
 # customer_app.py
 
-import hashlib
 import io
 from datetime import datetime, date
 from calendar import monthrange
@@ -11,32 +10,25 @@ from streamlit_calendar import calendar
 from supabase import create_client, Client
 
 # ---------------- Config ----------------
-st.set_page_config(page_title="Customer Order Calendar", layout="wide")
+st.set_page_config(page_title="Customer Order Portal", layout="wide")
 
 REQUIRED_COLS = [
-    "WO",
-    "Quote",
-    "PO Number",
-    "Status",
-    "Customer Name",
-    "Model Description",
-    "Scheduled Date",
-    "Price",
+    "WO", "Quote", "PO Number", "Status",
+    "Customer Name", "Model Description", "Scheduled Date", "Price",
 ]
 
 SUPABASE_TABLE = "order_book"
 
 STATUS_COLORS = {
-    "open":       {"backgroundColor": "#2563eb", "borderColor": "#1d4ed8", "textColor": "#ffffff"},
-    "in progress":{"backgroundColor": "#d97706", "borderColor": "#b45309", "textColor": "#ffffff"},
-    "completed":  {"backgroundColor": "#16a34a", "borderColor": "#15803d", "textColor": "#ffffff"},
-    "on hold":    {"backgroundColor": "#6b7280", "borderColor": "#4b5563", "textColor": "#ffffff"},
-    "cancelled":  {"backgroundColor": "#dc2626", "borderColor": "#b91c1c", "textColor": "#ffffff"},
-    "default":    {"backgroundColor": "#0f766e", "borderColor": "#115e59", "textColor": "#ffffff"},
+    "open":        {"backgroundColor": "#2563eb", "borderColor": "#1d4ed8", "textColor": "#ffffff"},
+    "in progress": {"backgroundColor": "#d97706", "borderColor": "#b45309", "textColor": "#ffffff"},
+    "completed":   {"backgroundColor": "#16a34a", "borderColor": "#15803d", "textColor": "#ffffff"},
+    "on hold":     {"backgroundColor": "#6b7280", "borderColor": "#4b5563", "textColor": "#ffffff"},
+    "cancelled":   {"backgroundColor": "#dc2626", "borderColor": "#b91c1c", "textColor": "#ffffff"},
+    "default":     {"backgroundColor": "#0f766e", "borderColor": "#115e59", "textColor": "#ffffff"},
 }
 
-# Color for "sold" dates (other customers' orders)
-SOLD_COLORS = {"backgroundColor": "#94a3b8", "borderColor": "#64748b", "textColor": "#ffffff"}
+SOLD_COLORS = {"backgroundColor": "#cbd5e1", "borderColor": "#94a3b8", "textColor": "#475569"}
 
 STATUS_KEYWORDS = {
     "open":        ["open", "new", "pending"],
@@ -65,16 +57,131 @@ def status_to_colors(status: str) -> dict:
     return STATUS_COLORS[normalize_status_key(status)]
 
 
+# ================================================================
+#  AUTH
+#  Credentials live in .streamlit/secrets.toml under [customers]
+#
+#  Example secrets.toml layout:
+#
+#  [customers.acme_user]
+#  password      = "hunter2"
+#  customer_name = "Acme Corp"
+#
+#  [customers.beta_user]
+#  password      = "letmein"
+#  customer_name = "Beta Industries"
+#
+#  The customer_name value MUST match exactly how the name appears
+#  in the Customer Name column of your order book.
+# ================================================================
+
+def verify_login(username: str, password: str) -> str | None:
+    """
+    Checks credentials against st.secrets['customers'].
+    Returns the matching customer_name string, or None if invalid.
+    """
+    try:
+        customers_cfg = st.secrets.get("customers", {})
+    except Exception:
+        customers_cfg = {}
+
+    entry = customers_cfg.get(username.strip())
+    if entry and entry.get("password") == password:
+        return entry.get("customer_name")
+    return None
+
+
+def show_login_screen():
+    """Renders a centered login card. Stops execution until successful login."""
+
+    st.markdown(
+        """
+        <style>
+        /* Blue gradient background */
+        [data-testid="stAppViewContainer"] > .main {
+            background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
+            min-height: 100vh;
+        }
+        /* Hide the default sidebar toggle when not logged in */
+        [data-testid="collapsedControl"] { display: none; }
+        section[data-testid="stSidebar"] { display: none; }
+
+        .login-wrap {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding-top: 8vh;
+        }
+        .login-card {
+            background: white;
+            padding: 2.5rem 3rem 2rem 3rem;
+            border-radius: 18px;
+            box-shadow: 0 24px 64px rgba(0,0,0,0.35);
+            width: 100%;
+            max-width: 420px;
+        }
+        .login-icon  { text-align: center; font-size: 3rem; margin-bottom: 4px; }
+        .login-title { text-align: center; font-size: 1.45rem; font-weight: 700;
+                       color: #1e3a5f; margin: 0; }
+        .login-sub   { text-align: center; font-size: 0.85rem; color: #64748b;
+                       margin: 6px 0 1.8rem 0; }
+        .footer-note { text-align: center; color: rgba(255,255,255,0.55);
+                       font-size: 0.78rem; margin-top: 1.5rem; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    _, mid, _ = st.columns([1, 2.2, 1])
+    with mid:
+        st.markdown('<div class="login-card">', unsafe_allow_html=True)
+        st.markdown('<div class="login-icon">🏭</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">Customer Portal</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="login-sub">Sign in to view your production schedule</div>',
+            unsafe_allow_html=True,
+        )
+
+        username = st.text_input(
+            "Username", placeholder="Enter your username", key="li_user",
+            label_visibility="visible",
+        )
+        password = st.text_input(
+            "Password", placeholder="Enter your password",
+            type="password", key="li_pass",
+        )
+
+        if st.button("Sign In →", type="primary", use_container_width=True):
+            if not username.strip() or not password:
+                st.error("Please enter both username and password.")
+            else:
+                customer_name = verify_login(username, password)
+                if customer_name:
+                    st.session_state.authenticated    = True
+                    st.session_state.logged_in_customer = customer_name
+                    st.session_state.login_username   = username.strip()
+                    st.rerun()
+                else:
+                    st.error("❌ Incorrect username or password.")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown(
+        '<div class="footer-note">Contact your administrator if you need access.</div>',
+        unsafe_allow_html=True,
+    )
+
+
 # ---------------- Supabase ----------------
 
 @st.cache_resource
 def get_supabase() -> Client:
-    """Cached Supabase client — created once per app lifetime."""
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
 
-def load_data() -> pd.DataFrame:
-    """Fetch all rows from Supabase and return as a normalized DataFrame."""
+@st.cache_data(ttl=300)
+def load_all_data() -> pd.DataFrame:
+    """Fetch full order book from Supabase (cached 5 min)."""
     supabase = get_supabase()
     response = supabase.table(SUPABASE_TABLE).select("*").execute()
     rows = response.data
@@ -83,7 +190,6 @@ def load_data() -> pd.DataFrame:
         return pd.DataFrame(columns=REQUIRED_COLS)
 
     df = pd.DataFrame(rows)
-
     df = df.rename(columns={
         "wo": "WO", "quote": "Quote", "po_number": "PO Number",
         "status": "Status", "customer_name": "Customer Name",
@@ -91,8 +197,7 @@ def load_data() -> pd.DataFrame:
         "scheduled_date": "Scheduled Date", "price": "Price",
     })
     df = df.drop(columns=[c for c in ["uploaded_name", "id"] if c in df.columns], errors="ignore")
-
-    df["Scheduled Date"] = df["Scheduled Date"].apply(parse_date_to_date)
+    df["Scheduled Date"] = df["Scheduled Date"].apply(_parse_date)
     df["Price"] = df["Price"].apply(lambda x: float(x) if x is not None else pd.NA)
     for c in ["Quote", "PO Number", "Status", "Customer Name", "Model Description"]:
         df[c] = df[c].fillna("").astype(str)
@@ -103,7 +208,7 @@ def load_data() -> pd.DataFrame:
 
 # ---------------- Helpers ----------------
 
-def parse_date_to_date(x):
+def _parse_date(x):
     if x is None or str(x).strip() in ("", "None", "NaT"):
         return pd.NaT
     try:
@@ -115,77 +220,68 @@ def parse_date_to_date(x):
     return pd.NaT if pd.isna(dt) else dt.date()
 
 
-def df_to_calendar_events(df: pd.DataFrame, selected_customer: str):
+def _is_mine(cust_col_value: str, my_customer: str) -> bool:
+    return cust_col_value.strip().lower() == my_customer.strip().lower()
+
+
+def df_to_calendar_events(df: pd.DataFrame, my_customer: str):
     """
-    Convert DataFrame to calendar events.
-    - Customer's own orders show with status colors
-    - Other customers' orders show as "SOLD" with gray color
+    Build calendar events:
+      - Own orders → full detail with status colour
+      - All other booked dates → gray "● SOLD" block (no customer details leaked)
     """
     events = []
     for _, r in df.iterrows():
-        wo = str(r.get("WO", "")).strip()
-        d = r.get("Scheduled Date", pd.NaT)
+        wo  = str(r.get("WO", "")).strip()
+        d   = r.get("Scheduled Date", pd.NaT)
         if not wo or pd.isna(d):
             continue
-        
-        cust = str(r.get("Customer Name", "")).strip()
-        model = str(r.get("Model Description", "")).strip()
+
+        cust   = str(r.get("Customer Name", "")).strip()
+        model  = str(r.get("Model Description", "")).strip()
         status = str(r.get("Status", "")).strip()
-        
-        # Check if this order belongs to the selected customer
-        is_customer_order = (cust.lower() == selected_customer.lower())
-        
-        if is_customer_order:
-            # Show customer's own orders with full details
-            title = " | ".join([p for p in [wo, cust] if p])
+
+        if _is_mine(cust, my_customer):
+            title = " | ".join(filter(None, [wo, cust]))
             if model:
                 title += f" — {model}"
-            
             events.append({
-                "id": wo,
-                "title": title,
-                "start": d.isoformat(),
-                "allDay": True,
+                "id": wo, "title": title,
+                "start": d.isoformat(), "allDay": True,
                 **status_to_colors(status),
                 "extendedProps": {
-                    "wo": wo,
-                    "customer_name": cust,
-                    "model_description": model,
-                    "status": status
+                    "wo": wo, "customer_name": cust,
+                    "model_description": model, "status": status,
                 },
             })
         else:
-            # Show other customers' orders as "SOLD"
             events.append({
                 "id": f"sold_{wo}",
-                "title": "SOLD",
-                "start": d.isoformat(),
-                "allDay": True,
+                "title": "● SOLD",
+                "start": d.isoformat(), "allDay": True,
                 **SOLD_COLORS,
-                "extendedProps": {
-                    "sold": True
-                },
+                "extendedProps": {"sold": True},
             })
-    
+
     return events
 
 
 def build_excel_bytes(df: pd.DataFrame) -> bytes:
-    export_df = df.copy()
-    export_df["Scheduled Date"] = pd.to_datetime(export_df["Scheduled Date"], errors="coerce")
+    out = df.copy()
+    out["Scheduled Date"] = pd.to_datetime(out["Scheduled Date"], errors="coerce")
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        export_df.to_excel(writer, index=False, sheet_name="Order Book")
-        ws = writer.sheets["Order Book"]
+        out.to_excel(writer, index=False, sheet_name="My Orders")
+        ws = writer.sheets["My Orders"]
         col_map = {cell.value: cell.column for cell in ws[1]}
-        date_col  = col_map.get("Scheduled Date")
-        price_col = col_map.get("Price")
-        if date_col:
+        dc = col_map.get("Scheduled Date")
+        pc = col_map.get("Price")
+        if dc:
             for r in range(2, ws.max_row + 1):
-                ws.cell(row=r, column=date_col).number_format = "yyyy-mm-dd"
-        if price_col:
+                ws.cell(row=r, column=dc).number_format = "yyyy-mm-dd"
+        if pc:
             for r in range(2, ws.max_row + 1):
-                ws.cell(row=r, column=price_col).number_format = '"$"#,##0.00'
+                ws.cell(row=r, column=pc).number_format = '"$"#,##0.00'
         for col in range(1, ws.max_column + 1):
             max_len = max(
                 (len(str(ws.cell(row=r, column=col).value or "")) for r in range(1, ws.max_row + 1)),
@@ -195,482 +291,276 @@ def build_excel_bytes(df: pd.DataFrame) -> bytes:
     return buf.getvalue()
 
 
-def generate_monthly_print_view(df: pd.DataFrame, month: int, year: int, selected_customer: str) -> str:
-    """Generate HTML for a printable monthly calendar view (customer's orders only)."""
-    month_name = datetime(year, month, 1).strftime("%B %Y")
-    
-    # Filter data for the selected month and customer
+def generate_monthly_print_view(df: pd.DataFrame, month: int, year: int, my_customer: str) -> str:
+    """Printable HTML calendar: own orders shown in full, all others shown as SOLD."""
+    month_label = datetime(year, month, 1).strftime("%B %Y")
+
     df_month = df[
         (pd.to_datetime(df["Scheduled Date"], errors="coerce").dt.month == month) &
-        (pd.to_datetime(df["Scheduled Date"], errors="coerce").dt.year == year) &
-        (df["Customer Name"].str.lower() == selected_customer.lower())
+        (pd.to_datetime(df["Scheduled Date"], errors="coerce").dt.year == year)
     ].copy()
-    
-    # Group by date
-    events_by_date = {}
+
+    my_events: dict[str, list] = {}
+    sold_dates: set[str] = set()
+
     for _, row in df_month.iterrows():
         d = row["Scheduled Date"]
         if pd.isna(d):
             continue
-        date_key = d.isoformat()
-        if date_key not in events_by_date:
-            events_by_date[date_key] = []
-        
-        wo = str(row.get("WO", "")).strip()
+        dk   = d.isoformat()
         cust = str(row.get("Customer Name", "")).strip()
-        model = str(row.get("Model Description", "")).strip()
-        status = str(row.get("Status", "")).strip()
-        
-        events_by_date[date_key].append({
-            "wo": wo,
-            "customer": cust,
-            "model": model,
-            "status": status,
-        })
-    
-    # Get sold dates (other customers in this month)
-    df_sold = df[
-        (pd.to_datetime(df["Scheduled Date"], errors="coerce").dt.month == month) &
-        (pd.to_datetime(df["Scheduled Date"], errors="coerce").dt.year == year) &
-        (df["Customer Name"].str.lower() != selected_customer.lower())
-    ].copy()
-    
-    sold_dates = set()
-    for _, row in df_sold.iterrows():
-        d = row["Scheduled Date"]
-        if not pd.isna(d):
-            sold_dates.add(d.isoformat())
-    
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>{month_name} - {selected_customer}</title>
-        <style>
-            @media print {{
-                @page {{ 
-                    size: letter landscape;
-                    margin: 0.4in; 
-                }}
-                body {{ margin: 0; }}
-                .no-print {{ display: none; }}
-            }}
-            
-            * {{
-                -webkit-print-color-adjust: exact !important;
-                print-color-adjust: exact !important;
-                color-adjust: exact !important;
-            }}
-            
-            body {{
-                font-family: Arial, sans-serif;
-                padding: 10px;
-                background: white;
-                max-width: 10.2in;
-                margin: 0 auto;
-            }}
-            
-            .header {{
-                text-align: center;
-                margin-bottom: 10px;
-            }}
-            
-            .header h2 {{
-                margin: 0;
-                font-size: 16px;
-                color: #333;
-                font-weight: 600;
-            }}
-            
-            .header .customer {{
-                margin: 5px 0 0 0;
-                font-size: 14px;
-                color: #666;
-            }}
-            
-            .calendar-table {{
-                width: 100%;
-                border-collapse: collapse;
-                table-layout: fixed;
-                margin-bottom: 10px;
-            }}
-            
-            .calendar-table th {{
-                background-color: #2563eb;
-                color: white;
-                padding: 6px;
-                text-align: center;
-                border: 1px solid #999;
-                font-size: 11px;
-                width: 14.28%;
-            }}
-            
-            .calendar-table td {{
-                border: 1px solid #999;
-                padding: 5px;
-                vertical-align: top;
-                width: 14.28%;
-                height: 105px;
-            }}
-            
-            .calendar-table td.sold {{
-                background-color: #f1f5f9;
-            }}
-            
-            .date-number {{
-                font-weight: bold;
-                font-size: 12px;
-                margin-bottom: 4px;
-                color: #333;
-            }}
-            
-            .sold-marker {{
-                text-align: center;
-                padding: 8px;
-                background-color: #94a3b8;
-                color: white;
-                border-radius: 3px;
-                font-weight: bold;
-                font-size: 10px;
-                margin-top: 10px;
-            }}
-            
-            .event-item {{
-                margin-bottom: 5px;
-                padding: 4px;
-                border-radius: 3px;
-                font-size: 9px;
-                line-height: 1.3;
-            }}
-            
-            .status-open {{ background-color: #dbeafe; border-left: 3px solid #2563eb; }}
-            .status-inprogress {{ background-color: #fed7aa; border-left: 3px solid #d97706; }}
-            .status-completed {{ background-color: #dcfce7; border-left: 3px solid #16a34a; }}
-            .status-onhold {{ background-color: #e5e7eb; border-left: 3px solid #6b7280; }}
-            .status-cancelled {{ background-color: #fee2e2; border-left: 3px solid #dc2626; }}
-            .status-default {{ background-color: #ccfbf1; border-left: 3px solid #0f766e; }}
-            
-            .event-wo {{
-                font-weight: bold;
-                color: #000;
-                font-size: 10px;
-            }}
-            
-            .event-customer {{
-                color: #1f2937;
-                font-size: 9.5px;
-                font-weight: 500;
-            }}
-            
-            .event-model {{
-                color: #374151;
-                font-size: 9px;
-            }}
-            
-            .legend {{
-                margin-top: 10px;
-                padding: 10px;
-                background-color: #f9fafb;
-                border: 1px solid #ddd;
-                border-radius: 3px;
-            }}
-            
-            .legend-title {{
-                font-weight: bold;
-                margin-bottom: 8px;
-                font-size: 11px;
-            }}
-            
-            .legend-items {{
-                display: flex;
-                flex-wrap: wrap;
-                gap: 12px;
-            }}
-            
-            .legend-item {{
-                display: flex;
-                align-items: center;
-                gap: 5px;
-                font-size: 10px;
-            }}
-            
-            .legend-color {{
-                width: 16px;
-                height: 16px;
-                border-radius: 2px;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="header">
-            <h2>{month_name}</h2>
-            <div class="customer">Customer: {selected_customer}</div>
-        </div>
-        
-        <table class="calendar-table">
-            <thead>
-                <tr>
-                    <th>Sunday</th>
-                    <th>Monday</th>
-                    <th>Tuesday</th>
-                    <th>Wednesday</th>
-                    <th>Thursday</th>
-                    <th>Friday</th>
-                    <th>Saturday</th>
-                </tr>
-            </thead>
-            <tbody>
-    """
-    
-    # Get the first day of the month and number of days
-    first_day_weekday = datetime(year, month, 1).weekday()
-    # Adjust for Sunday being 0
-    first_day_weekday = (first_day_weekday + 1) % 7
-    num_days = monthrange(year, month)[1]
-    
-    # Build calendar grid
-    current_day = 1
-    weeks_needed = ((num_days + first_day_weekday) // 7) + (1 if (num_days + first_day_weekday) % 7 > 0 else 0)
-    
-    for week in range(weeks_needed):
+        if _is_mine(cust, my_customer):
+            my_events.setdefault(dk, []).append({
+                "wo":     str(row.get("WO", "")).strip(),
+                "cust":   cust,
+                "model":  str(row.get("Model Description", "")).strip(),
+                "status": str(row.get("Status", "")).strip(),
+            })
+        else:
+            sold_dates.add(dk)
+
+    fdw        = (datetime(year, month, 1).weekday() + 1) % 7
+    num_days   = monthrange(year, month)[1]
+    weeks_need = ((num_days + fdw - 1) // 7) + 1
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<title>{month_label} — {my_customer}</title>
+<style>
+@media print {{ @page {{ size: letter landscape; margin: 0.4in; }} body {{ margin:0; }} }}
+* {{ -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }}
+body {{ font-family:Arial,sans-serif; padding:10px; background:white; max-width:10.2in; margin:0 auto; }}
+.header {{ text-align:center; margin-bottom:10px; }}
+.header h2 {{ margin:0; font-size:16px; color:#1e3a5f; font-weight:700; }}
+.header .sub {{ font-size:12px; color:#64748b; margin-top:4px; }}
+table {{ width:100%; border-collapse:collapse; table-layout:fixed; }}
+th {{ background:#2563eb; color:white; padding:6px; text-align:center;
+      border:1px solid #999; font-size:11px; width:14.28%; }}
+td {{ border:1px solid #ccc; padding:5px; vertical-align:top; width:14.28%;
+      height:110px; background:white; }}
+td.sold {{ background:#f8fafc; }}
+.dn {{ font-weight:bold; font-size:12px; color:#333; margin-bottom:4px; }}
+.ev {{ margin-bottom:4px; padding:4px; border-radius:3px; font-size:9px; line-height:1.3; }}
+.s-open       {{ background:#dbeafe; border-left:3px solid #2563eb; }}
+.s-inprogress {{ background:#fed7aa; border-left:3px solid #d97706; }}
+.s-completed  {{ background:#dcfce7; border-left:3px solid #16a34a; }}
+.s-onhold     {{ background:#e5e7eb; border-left:3px solid #6b7280; }}
+.s-cancelled  {{ background:#fee2e2; border-left:3px solid #dc2626; }}
+.s-default    {{ background:#ccfbf1; border-left:3px solid #0f766e; }}
+.wo  {{ font-weight:bold; font-size:10px; color:#000; }}
+.cu  {{ font-size:9.5px; color:#1f2937; font-weight:500; }}
+.md  {{ font-size:9px; color:#374151; }}
+.sold-badge {{ text-align:center; margin-top:8px; padding:5px; background:#cbd5e1;
+               color:#475569; border-radius:3px; font-weight:bold; font-size:10px; }}
+.legend {{ margin-top:12px; padding:8px 12px; background:#f9fafb;
+           border:1px solid #ddd; border-radius:4px; }}
+.lt {{ font-weight:bold; font-size:11px; margin-bottom:6px; }}
+.li {{ display:flex; align-items:center; gap:5px; font-size:10px; margin-right:12px;
+       display:inline-flex; }}
+.lc {{ width:14px; height:14px; border-radius:2px; display:inline-block; }}
+</style>
+</head>
+<body>
+<div class="header">
+  <h2>{month_label}</h2>
+  <div class="sub">Production Schedule — <strong>{my_customer}</strong></div>
+</div>
+<table>
+<thead><tr>
+  <th>Sunday</th><th>Monday</th><th>Tuesday</th>
+  <th>Wednesday</th><th>Thursday</th><th>Friday</th><th>Saturday</th>
+</tr></thead>
+<tbody>"""
+
+    cur = 1
+    for week in range(weeks_need):
         html += "<tr>"
-        for day_of_week in range(7):
-            if week == 0 and day_of_week < first_day_weekday:
+        for dow in range(7):
+            if week == 0 and dow < fdw:
                 html += "<td></td>"
-            elif current_day > num_days:
+            elif cur > num_days:
                 html += "<td></td>"
             else:
-                date_obj = date(year, month, current_day)
-                date_str = date_obj.isoformat()
-                
-                # Check if sold
-                is_sold = date_str in sold_dates
-                td_class = ' class="sold"' if is_sold else ''
-                
-                html += f'<td{td_class}><div class="date-number">{current_day}</div>'
-                
-                if date_str in events_by_date:
-                    # Customer's orders
-                    for event in events_by_date[date_str]:
-                        status_class = normalize_status_key(event["status"]).replace(" ", "")
-                        html += f'<div class="event-item status-{status_class}">'
-                        html += f'<div class="event-wo">WO: {event["wo"]}</div>'
-                        if event["customer"]:
-                            html += f'<div class="event-customer">{event["customer"]}</div>'
-                        if event["model"]:
-                            html += f'<div class="event-model">{event["model"]}</div>'
+                dk       = date(year, month, cur).isoformat()
+                is_sold  = (dk in sold_dates) and (dk not in my_events)
+                td_cls   = ' class="sold"' if is_sold else ''
+                html += f'<td{td_cls}><div class="dn">{cur}</div>'
+                if dk in my_events:
+                    for ev in my_events[dk]:
+                        sk = normalize_status_key(ev["status"]).replace(" ", "")
+                        html += f'<div class="ev s-{sk}"><div class="wo">WO: {ev["wo"]}</div>'
+                        if ev["cust"]:
+                            html += f'<div class="cu">{ev["cust"]}</div>'
+                        if ev["model"]:
+                            html += f'<div class="md">{ev["model"]}</div>'
                         html += '</div>'
                 elif is_sold:
-                    # Show SOLD marker
-                    html += '<div class="sold-marker">SOLD</div>'
-                
+                    html += '<div class="sold-badge">SOLD</div>'
                 html += '</td>'
-                current_day += 1
+                cur += 1
         html += "</tr>"
-    
+
     html += """
-            </tbody>
-        </table>
-        
-        <div class="legend">
-            <div class="legend-title">Legend:</div>
-            <div class="legend-items">
-                <div class="legend-item">
-                    <div class="legend-color" style="background-color: #2563eb;"></div>
-                    <span>Open</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color" style="background-color: #d97706;"></div>
-                    <span>In Progress</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color" style="background-color: #16a34a;"></div>
-                    <span>Completed</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color" style="background-color: #6b7280;"></div>
-                    <span>On Hold</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color" style="background-color: #dc2626;"></div>
-                    <span>Cancelled</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color" style="background-color: #94a3b8;"></div>
-                    <span>SOLD (Unavailable)</span>
-                </div>
-            </div>
-        </div>
-        
-        <script>
-            // Optional: Auto-print on load
-            // window.onload = function() { window.print(); }
-        </script>
-    </body>
-    </html>
-    """
-    
+</tbody></table>
+<div class="legend"><div class="lt">Legend:</div>
+  <div class="li"><span class="lc" style="background:#2563eb"></span> Open</div>
+  <div class="li"><span class="lc" style="background:#d97706"></span> In Progress</div>
+  <div class="li"><span class="lc" style="background:#16a34a"></span> Completed</div>
+  <div class="li"><span class="lc" style="background:#6b7280"></span> On Hold</div>
+  <div class="li"><span class="lc" style="background:#dc2626"></span> Cancelled</div>
+  <div class="li"><span class="lc" style="background:#cbd5e1"></span> SOLD — Date Unavailable</div>
+</div>
+</body></html>"""
+
     return html
 
 
-# ---------------- Session Init ----------------
-if "df" not in st.session_state:
-    with st.spinner("Loading order data..."):
-        df_loaded = load_data()
-    st.session_state.df = df_loaded
-if "df_version" not in st.session_state:
-    st.session_state.df_version = 0
-if "show_print_preview" not in st.session_state:
-    st.session_state.show_print_preview = False
+# ================================================================
+#  SESSION STATE INIT
+# ================================================================
+for key, default in [
+    ("authenticated",      False),
+    ("logged_in_customer", None),
+    ("login_username",     None),
+    ("df_version",         0),
+    ("show_print_preview", False),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 
-# ---------------- Sidebar - Customer Selection ----------------
-with st.sidebar:
-    st.header("🏢 Customer Portal")
-    
-    # Get unique customer names
-    customer_names = sorted(st.session_state.df["Customer Name"].unique().tolist())
-    customer_names = [c for c in customer_names if c.strip()]  # Remove empty strings
-    
-    if not customer_names:
-        st.warning("No customers found in database.")
-        selected_customer = None
-    else:
-        selected_customer = st.selectbox(
-            "Select Your Company",
-            customer_names,
-            help="Select your company name to view your orders"
-        )
-    
-    st.divider()
-    st.caption("📖 Use the sidebar page selector to open **Table View**")
-    st.caption("🔒 This is a read-only view. Contact admin for changes.")
-
-# Store selected customer in session state
-if selected_customer:
-    st.session_state.selected_customer = selected_customer
-else:
-    st.session_state.selected_customer = None
-
-# ---------------- Main Content ----------------
-if not selected_customer:
-    st.title("📅 Production Schedule Calendar")
-    st.info("👈 Please select your company from the sidebar to view your orders.")
+# ================================================================
+#  AUTH GATE  — nothing below executes until login succeeds
+# ================================================================
+if not st.session_state.authenticated:
+    show_login_screen()
     st.stop()
 
-# Filter data for selected customer
-customer_df = st.session_state.df[
-    st.session_state.df["Customer Name"].str.lower() == selected_customer.lower()
+# ================================================================
+#  AUTHENTICATED SECTION
+# ================================================================
+my_customer: str = st.session_state.logged_in_customer
+
+# Load full dataset (cached), then narrow to this customer immediately
+df_all = load_all_data()
+my_df  = df_all[
+    df_all["Customer Name"].str.strip().str.lower() == my_customer.strip().lower()
 ].copy()
 
-st.title(f"📅 Production Schedule - {selected_customer}")
 
-# ---------------- Calendar ----------------
-events = df_to_calendar_events(st.session_state.df, selected_customer)
+# ---- Sidebar ----
+with st.sidebar:
+    st.markdown(f"### 👤 {my_customer}")
+    st.caption(f"Signed in as `{st.session_state.login_username}`")
+    st.divider()
+    st.caption("📖 Use the page selector to open **Table View**.")
+    st.caption("🔒 Read-only — contact admin to make changes.")
+    st.divider()
+    if st.button("🚪 Log Out", use_container_width=True):
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        st.rerun()
 
-cal_state = calendar(
+
+# ---- Page title ----
+st.title("📅 My Production Schedule")
+st.caption(
+    f"Showing orders for **{my_customer}**.  "
+    f"Gray **SOLD** blocks are dates already taken by other customers."
+)
+
+# ---- Calendar ----
+events = df_to_calendar_events(df_all, my_customer)
+
+calendar(
     events=events,
     options={
         "initialView": "dayGridMonth",
-        "editable": False,  # Read-only
-        "selectable": False,  # Can't select dates
-        "height": 900,
+        "editable":    False,
+        "selectable":  False,
+        "height":      880,
         "eventDisplay": "block",
         "dayMaxEvents": False,
         "headerToolbar": {
-            "left": "today prev,next",
+            "left":   "today prev,next",
             "center": "title",
-            "right": "dayGridMonth,timeGridWeek,timeGridDay,listWeek",
+            "right":  "dayGridMonth,timeGridWeek,timeGridDay,listWeek",
         },
     },
     custom_css="""
-        .fc .fc-daygrid-event, .fc .fc-timegrid-event { 
-            white-space: normal !important;
-            cursor: default !important;
-        }
-        .fc .fc-event-title, .fc .fc-list-event-title {
-            white-space: normal !important; 
-            overflow: visible !important; 
-            text-overflow: clip !important;
-        }
+        .fc .fc-daygrid-event { white-space: normal !important; cursor: default !important; }
+        .fc .fc-event-title   { white-space: normal !important; overflow: visible !important;
+                                text-overflow: clip !important; }
     """,
-    key=f"calendar_{st.session_state.df_version}",
+    key=f"cal_{st.session_state.df_version}",
 )
 
 st.divider()
 
-# Statistics
-col1, col2, col3 = st.columns([1, 1, 2])
-with col1:
-    st.metric("Your Orders", int(len(customer_df)))
-with col2:
-    total_value = customer_df["Price"].dropna().sum() if "Price" in customer_df else 0
-    st.metric("Total Value", f"${total_value:,.2f}")
-with col3:
-    st.caption("🟦 Your orders | ⬜ SOLD (unavailable dates)")
+# ---- Stats ----
+c1, c2, c3 = st.columns([1, 1, 2])
+with c1:
+    st.metric("My Orders", int(len(my_df)))
+with c2:
+    total_val = my_df["Price"].dropna().sum() if not my_df.empty else 0
+    st.metric("Total Value", f"${total_val:,.2f}")
+with c3:
+    st.caption("🟦 Your orders   🔘 SOLD — unavailable dates")
 
-st.caption("Status colors: 🔵 Open  🟠 In Progress  🟢 Completed  ⚫ On Hold  🔴 Cancelled")
+st.caption("Status colours:  🔵 Open  🟠 In Progress  🟢 Completed  ⚫ On Hold  🔴 Cancelled")
 
-# Download Excel (customer's data only)
-st.subheader("📥 Download Your Orders")
+# ---- Download ----
+st.subheader("📥 Download My Orders")
 st.download_button(
-    "Download Excel",
-    data=build_excel_bytes(customer_df),
-    file_name=f"orders_{selected_customer.replace(' ', '_')}.xlsx",
+    "⬇️ Download Excel",
+    data=build_excel_bytes(my_df),
+    file_name=f"my_orders_{my_customer.replace(' ', '_')}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
 st.divider()
 
-# ---------------- Monthly Print View ----------------
+# ---- Print View ----
 st.subheader("🖨️ Print Monthly Schedule")
-st.caption("Generate a printable calendar showing your orders and sold dates")
+st.caption("Generates a printable calendar: your orders + sold dates")
 
-print_col1, print_col2, print_col3 = st.columns([2, 2, 3])
-with print_col1:
+pc1, pc2, pc3 = st.columns([2, 2, 3])
+with pc1:
     print_month = st.selectbox(
-        "Month",
-        range(1, 13),
+        "Month", range(1, 13),
         format_func=lambda x: datetime(2000, x, 1).strftime("%B"),
-        key="print_month",
-        index=datetime.now().month - 1
+        index=datetime.now().month - 1, key="print_month",
     )
-with print_col2:
+with pc2:
     print_year = st.number_input(
-        "Year",
-        min_value=2020,
-        max_value=2030,
-        value=datetime.now().year,
-        key="print_year"
+        "Year", min_value=2020, max_value=2030,
+        value=datetime.now().year, key="print_year",
     )
-with print_col3:
-    st.write("")  # Spacer
-    generate_btn = st.button("📄 Generate Print View", type="primary")
-
-if generate_btn:
-    st.session_state.show_print_preview = True
-    st.session_state.print_html = generate_monthly_print_view(
-        st.session_state.df, 
-        print_month, 
-        print_year,
-        selected_customer
-    )
-    st.session_state.print_month_name = datetime(print_year, print_month, 1).strftime("%B_%Y")
+with pc3:
+    st.write("")
+    if st.button("📄 Generate Print View", type="primary"):
+        st.session_state.show_print_preview = True
+        st.session_state.print_html = generate_monthly_print_view(
+            df_all, print_month, print_year, my_customer
+        )
+        st.session_state.print_month_name = datetime(
+            print_year, print_month, 1
+        ).strftime("%B_%Y")
 
 if st.session_state.show_print_preview:
-    col_dl, col_hide = st.columns([1, 4])
-    with col_dl:
+    dl_col, hide_col = st.columns([1, 4])
+    with dl_col:
         st.download_button(
-            label="💾 Download HTML to Print",
+            "💾 Download HTML to Print",
             data=st.session_state.print_html,
-            file_name=f"schedule_{selected_customer.replace(' ', '_')}_{st.session_state.print_month_name}.html",
+            file_name=f"schedule_{my_customer.replace(' ', '_')}_{st.session_state.print_month_name}.html",
             mime="text/html",
-            help="Download and open in browser, then use Ctrl+P (Cmd+P on Mac) to print"
+            help="Open in browser → Ctrl+P / Cmd+P",
         )
-    with col_hide:
+    with hide_col:
         if st.button("Hide Preview"):
             st.session_state.show_print_preview = False
             st.rerun()
-    
-    st.info("👁️ Preview below - Download the HTML file and open in your browser to print with proper formatting")
+    st.info("👁️ Preview — download HTML and open in browser for proper printing")
     st.components.v1.html(st.session_state.print_html, height=1000, scrolling=True)
