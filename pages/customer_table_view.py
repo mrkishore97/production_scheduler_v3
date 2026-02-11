@@ -8,11 +8,6 @@ from supabase import create_client, Client
 
 st.set_page_config(page_title="My Orders — Table", layout="wide")
 
-# Restrict this page to the customer portal only.
-if st.session_state.get("portal_mode") != "customer":
-    st.warning("This page is only available in the customer app (customer_app.py).")
-    st.stop()
-
 REQUIRED_COLS = [
     "WO", "Quote", "PO Number", "Status",
     "Customer Name", "Model Description", "Scheduled Date", "Price",
