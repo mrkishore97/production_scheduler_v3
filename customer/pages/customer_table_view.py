@@ -81,6 +81,10 @@ def apply_filters(df, filters):
         else:
             out = out[out["Status"].str.contains(filters["status"], case=False, na=False)]
 
+    # Customer sub-filter — only relevant when user has multiple customers
+    if filters["customer"] and filters["customer"] != "All":
+        out = out[out["Customer Name"].str.strip() == filters["customer"].strip()]
+
     if filters["model_text"]:
         if filters["model_match"] == "Exact":
             out = out[out["Model Description"].str.strip() == filters["model_text"].strip()]
@@ -102,17 +106,18 @@ def apply_filters(df, filters):
 #  SESSION STATE INIT
 # ================================================================
 for key, default in [
-    ("authenticated",      False),
-    ("logged_in_customer", None),
-    ("login_username",     None),
-    ("df_version",         0),
+    ("authenticated",       False),
+    ("logged_in_customers", []),
+    ("customer_display",    ""),
+    ("login_username",      None),
+    ("df_version",          0),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
 
 
 # ================================================================
-#  AUTH GATE  — redirect to login if not authenticated
+#  AUTH GATE
 # ================================================================
 if not st.session_state.authenticated:
     st.title("🔒 Access Denied")
@@ -124,12 +129,17 @@ if not st.session_state.authenticated:
 # ================================================================
 #  AUTHENTICATED SECTION
 # ================================================================
-my_customer: str = st.session_state.logged_in_customer
+my_customers: list[str] = st.session_state.logged_in_customers
+customer_display: str   = st.session_state.customer_display
 
 # ---- Sidebar ----
 with st.sidebar:
-    st.markdown(f"### 👤 {my_customer}")
+    st.markdown(f"### 👤 {customer_display}")
     st.caption(f"Signed in as `{st.session_state.login_username}`")
+    if len(my_customers) > 1:
+        st.caption("**Viewing orders for:**")
+        for c in my_customers:
+            st.caption(f"• {c}")
     st.divider()
     st.caption("🔒 Read-only — contact admin to make changes.")
     st.divider()
@@ -138,17 +148,19 @@ with st.sidebar:
             del st.session_state[k]
         st.rerun()
 
-# ---- Load & filter data ----
+# ---- Load & filter to this user's customers ----
 df_all = load_all_data()
 my_df  = df_all[
-    df_all["Customer Name"].str.strip().str.lower() == my_customer.strip().lower()
+    df_all["Customer Name"].str.strip().str.lower().isin(
+        [c.strip().lower() for c in my_customers]
+    )
 ].copy()
 
-st.title(f"🧾 My Orders — {my_customer}")
+st.title(f"🧾 My Orders — {customer_display}")
 st.caption("Read-only view of your orders. Contact your admin for any changes.")
 
 if my_df.empty:
-    st.warning(f"No orders found for **{my_customer}**.")
+    st.warning(f"No orders found for **{customer_display}**.")
     st.stop()
 
 # ---- Filters ----
@@ -179,6 +191,15 @@ with st.expander("Filter Options", expanded=False):
                                            label_visibility="collapsed")
 
     with col2:
+        # Customer sub-filter — only shown when user has access to multiple customers
+        if len(my_customers) > 1:
+            st.markdown("**Customer**")
+            customer_options  = ["All"] + sorted(my_customers)
+            selected_customer = st.selectbox("Customer", customer_options, key="f_customer",
+                                             label_visibility="collapsed")
+        else:
+            selected_customer = "All"
+
         st.markdown("**Model Description**")
         m_cols = st.columns([3, 1])
         model_text  = m_cols[0].text_input("Model", label_visibility="collapsed", key="f_model")
@@ -216,6 +237,7 @@ filters = {
     "po_match":         po_match,
     "status":           status,
     "status_match":     status_match,
+    "customer":         selected_customer,
     "model_text":       model_text,
     "model_match":      model_match,
     "date_filter_type": date_filter_type,
