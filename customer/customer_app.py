@@ -63,22 +63,23 @@ def status_to_colors(status: str) -> dict:
 #
 #  Example secrets.toml layout:
 #
-#  [customers.acme_user]
-#  password      = "hunter2"
-#  customer_name = "Acme Corp"
+#  [customers.user1]
+#  password       = "hunter2"
+#  customer_names = ["Acme Corp", "Beta Industries"]
 #
-#  [customers.beta_user]
-#  password      = "letmein"
-#  customer_name = "Beta Industries"
+#  [customers.user2]
+#  password       = "letmein"
+#  customer_names = ["Beta Industries"]
 #
-#  The customer_name value MUST match exactly how the name appears
+#  customer_names values MUST match exactly how names appear
 #  in the Customer Name column of your order book.
 # ================================================================
 
-def verify_login(username: str, password: str) -> str | None:
+def verify_login(username: str, password: str) -> list[str] | None:
     """
     Checks credentials against st.secrets['customers'].
-    Returns the matching customer_name string, or None if invalid.
+    Returns a list of customer names the user can see, or None if invalid.
+    Supports both legacy single `customer_name` and new `customer_names` list.
     """
     try:
         customers_cfg = st.secrets.get("customers", {})
@@ -86,8 +87,18 @@ def verify_login(username: str, password: str) -> str | None:
         customers_cfg = {}
 
     entry = customers_cfg.get(username.strip())
-    if entry and entry.get("password") == password:
-        return entry.get("customer_name")
+    if not entry or entry.get("password") != password:
+        return None
+
+    # New list format
+    if "customer_names" in entry:
+        names = entry["customer_names"]
+        return [names] if isinstance(names, str) else list(names)
+
+    # Legacy single customer_name (backwards compatible)
+    if "customer_name" in entry:
+        return [entry["customer_name"]]
+
     return None
 
 
@@ -97,21 +108,12 @@ def show_login_screen():
     st.markdown(
         """
         <style>
-        /* Blue gradient background */
         [data-testid="stAppViewContainer"] > .main {
             background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
             min-height: 100vh;
         }
-        /* Hide the default sidebar toggle when not logged in */
         [data-testid="collapsedControl"] { display: none; }
         section[data-testid="stSidebar"] { display: none; }
-
-        .login-wrap {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding-top: 8vh;
-        }
         .login-card {
             background: white;
             padding: 2.5rem 3rem 2rem 3rem;
@@ -142,24 +144,20 @@ def show_login_screen():
             unsafe_allow_html=True,
         )
 
-        username = st.text_input(
-            "Username", placeholder="Enter your username", key="li_user",
-            label_visibility="visible",
-        )
-        password = st.text_input(
-            "Password", placeholder="Enter your password",
-            type="password", key="li_pass",
-        )
+        username = st.text_input("Username", placeholder="Enter your username", key="li_user")
+        password = st.text_input("Password", placeholder="Enter your password",
+                                 type="password", key="li_pass")
 
         if st.button("Sign In →", type="primary", use_container_width=True):
             if not username.strip() or not password:
                 st.error("Please enter both username and password.")
             else:
-                customer_name = verify_login(username, password)
-                if customer_name:
-                    st.session_state.authenticated    = True
-                    st.session_state.logged_in_customer = customer_name
-                    st.session_state.login_username   = username.strip()
+                customer_names = verify_login(username, password)
+                if customer_names:
+                    st.session_state.authenticated       = True
+                    st.session_state.logged_in_customers = customer_names
+                    st.session_state.login_username      = username.strip()
+                    st.session_state.customer_display    = ", ".join(customer_names)
                     st.rerun()
                 else:
                     st.error("❌ Incorrect username or password.")
@@ -220,15 +218,16 @@ def _parse_date(x):
     return pd.NaT if pd.isna(dt) else dt.date()
 
 
-def _is_mine(cust_col_value: str, my_customer: str) -> bool:
-    return cust_col_value.strip().lower() == my_customer.strip().lower()
+def _is_mine(cust_col_value: str, my_customers: list[str]) -> bool:
+    """True if this row belongs to any of the logged-in user's customers."""
+    val = cust_col_value.strip().lower()
+    return any(val == c.strip().lower() for c in my_customers)
 
 
-def df_to_calendar_events(df: pd.DataFrame, my_customer: str):
+def df_to_calendar_events(df: pd.DataFrame, my_customers: list[str]):
     """
-    Build calendar events:
-      - Own orders → full detail with status colour
-      - All other booked dates → gray "● SOLD" block (no customer details leaked)
+    Own orders → full detail with status colour.
+    All other booked dates → gray SOLD block (no details leaked).
     """
     events = []
     for _, r in df.iterrows():
@@ -241,7 +240,7 @@ def df_to_calendar_events(df: pd.DataFrame, my_customer: str):
         model  = str(r.get("Model Description", "")).strip()
         status = str(r.get("Status", "")).strip()
 
-        if _is_mine(cust, my_customer):
+        if _is_mine(cust, my_customers):
             title = " | ".join(filter(None, [wo, cust]))
             if model:
                 title += f" — {model}"
@@ -291,9 +290,10 @@ def build_excel_bytes(df: pd.DataFrame) -> bytes:
     return buf.getvalue()
 
 
-def generate_monthly_print_view(df: pd.DataFrame, month: int, year: int, my_customer: str) -> str:
+def generate_monthly_print_view(df: pd.DataFrame, month: int, year: int, my_customers: list[str]) -> str:
     """Printable HTML calendar: own orders shown in full, all others shown as SOLD."""
-    month_label = datetime(year, month, 1).strftime("%B %Y")
+    month_label     = datetime(year, month, 1).strftime("%B %Y")
+    customers_label = ", ".join(my_customers)
 
     df_month = df[
         (pd.to_datetime(df["Scheduled Date"], errors="coerce").dt.month == month) &
@@ -309,7 +309,7 @@ def generate_monthly_print_view(df: pd.DataFrame, month: int, year: int, my_cust
             continue
         dk   = d.isoformat()
         cust = str(row.get("Customer Name", "")).strip()
-        if _is_mine(cust, my_customer):
+        if _is_mine(cust, my_customers):
             my_events.setdefault(dk, []).append({
                 "wo":     str(row.get("WO", "")).strip(),
                 "cust":   cust,
@@ -326,7 +326,7 @@ def generate_monthly_print_view(df: pd.DataFrame, month: int, year: int, my_cust
     html = f"""<!DOCTYPE html>
 <html>
 <head>
-<title>{month_label} — {my_customer}</title>
+<title>{month_label} — {customers_label}</title>
 <style>
 @media print {{ @page {{ size: letter landscape; margin: 0.4in; }} body {{ margin:0; }} }}
 * {{ -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }}
@@ -356,15 +356,14 @@ td.sold {{ background:#f8fafc; }}
 .legend {{ margin-top:12px; padding:8px 12px; background:#f9fafb;
            border:1px solid #ddd; border-radius:4px; }}
 .lt {{ font-weight:bold; font-size:11px; margin-bottom:6px; }}
-.li {{ display:flex; align-items:center; gap:5px; font-size:10px; margin-right:12px;
-       display:inline-flex; }}
+.li {{ display:inline-flex; align-items:center; gap:5px; font-size:10px; margin-right:12px; }}
 .lc {{ width:14px; height:14px; border-radius:2px; display:inline-block; }}
 </style>
 </head>
 <body>
 <div class="header">
   <h2>{month_label}</h2>
-  <div class="sub">Production Schedule — <strong>{my_customer}</strong></div>
+  <div class="sub">Production Schedule — <strong>{customers_label}</strong></div>
 </div>
 <table>
 <thead><tr>
@@ -382,9 +381,9 @@ td.sold {{ background:#f8fafc; }}
             elif cur > num_days:
                 html += "<td></td>"
             else:
-                dk       = date(year, month, cur).isoformat()
-                is_sold  = (dk in sold_dates) and (dk not in my_events)
-                td_cls   = ' class="sold"' if is_sold else ''
+                dk      = date(year, month, cur).isoformat()
+                is_sold = (dk in sold_dates) and (dk not in my_events)
+                td_cls  = ' class="sold"' if is_sold else ''
                 html += f'<td{td_cls}><div class="dn">{cur}</div>'
                 if dk in my_events:
                     for ev in my_events[dk]:
@@ -420,18 +419,19 @@ td.sold {{ background:#f8fafc; }}
 #  SESSION STATE INIT
 # ================================================================
 for key, default in [
-    ("authenticated",      False),
-    ("logged_in_customer", None),
-    ("login_username",     None),
-    ("df_version",         0),
-    ("show_print_preview", False),
+    ("authenticated",       False),
+    ("logged_in_customers", []),
+    ("customer_display",    ""),
+    ("login_username",      None),
+    ("df_version",          0),
+    ("show_print_preview",  False),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
 
 
 # ================================================================
-#  AUTH GATE  — nothing below executes until login succeeds
+#  AUTH GATE
 # ================================================================
 if not st.session_state.authenticated:
     show_login_screen()
@@ -440,19 +440,25 @@ if not st.session_state.authenticated:
 # ================================================================
 #  AUTHENTICATED SECTION
 # ================================================================
-my_customer: str = st.session_state.logged_in_customer
+my_customers: list[str] = st.session_state.logged_in_customers
+customer_display: str   = st.session_state.customer_display
 
-# Load full dataset (cached), then narrow to this customer immediately
 df_all = load_all_data()
 my_df  = df_all[
-    df_all["Customer Name"].str.strip().str.lower() == my_customer.strip().lower()
+    df_all["Customer Name"].str.strip().str.lower().isin(
+        [c.strip().lower() for c in my_customers]
+    )
 ].copy()
 
 
 # ---- Sidebar ----
 with st.sidebar:
-    st.markdown(f"### 👤 {my_customer}")
+    st.markdown(f"### 👤 {customer_display}")
     st.caption(f"Signed in as `{st.session_state.login_username}`")
+    if len(my_customers) > 1:
+        st.caption("**Viewing orders for:**")
+        for c in my_customers:
+            st.caption(f"• {c}")
     st.divider()
     st.caption("📖 Use the page selector to open **Table View**.")
     st.caption("🔒 Read-only — contact admin to make changes.")
@@ -466,12 +472,12 @@ with st.sidebar:
 # ---- Page title ----
 st.title("📅 My Production Schedule")
 st.caption(
-    f"Showing orders for **{my_customer}**.  "
-    f"Gray **SOLD** blocks are dates already taken by other customers."
+    f"Showing orders for **{customer_display}**.  "
+    "Gray **SOLD** blocks are dates already taken by other customers."
 )
 
 # ---- Calendar ----
-events = df_to_calendar_events(df_all, my_customer)
+events = df_to_calendar_events(df_all, my_customers)
 
 calendar(
     events=events,
@@ -511,11 +517,12 @@ with c3:
 st.caption("Status colours:  🔵 Open  🟠 In Progress  🟢 Completed  ⚫ On Hold  🔴 Cancelled")
 
 # ---- Download ----
+safe_name = customer_display.replace(" ", "_").replace(",", "").replace("/", "")
 st.subheader("📥 Download My Orders")
 st.download_button(
     "⬇️ Download Excel",
     data=build_excel_bytes(my_df),
-    file_name=f"my_orders_{my_customer.replace(' ', '_')}.xlsx",
+    file_name=f"my_orders_{safe_name}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
@@ -542,7 +549,7 @@ with pc3:
     if st.button("📄 Generate Print View", type="primary"):
         st.session_state.show_print_preview = True
         st.session_state.print_html = generate_monthly_print_view(
-            df_all, print_month, print_year, my_customer
+            df_all, print_month, print_year, my_customers
         )
         st.session_state.print_month_name = datetime(
             print_year, print_month, 1
@@ -554,7 +561,7 @@ if st.session_state.show_print_preview:
         st.download_button(
             "💾 Download HTML to Print",
             data=st.session_state.print_html,
-            file_name=f"schedule_{my_customer.replace(' ', '_')}_{st.session_state.print_month_name}.html",
+            file_name=f"schedule_{safe_name}_{st.session_state.print_month_name}.html",
             mime="text/html",
             help="Open in browser → Ctrl+P / Cmd+P",
         )
