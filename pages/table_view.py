@@ -9,11 +9,6 @@ from supabase import create_client, Client
 
 st.set_page_config(page_title="Order Book Table", layout="wide")
 
-# Restrict this page to the admin portal only.
-if st.session_state.get("portal_mode") != "admin":
-    st.warning("This page is only available in the admin app (app.py).")
-    st.stop()
-
 REQUIRED_COLS = [
     "WO",
     "Quote",
